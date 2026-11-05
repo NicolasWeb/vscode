@@ -11,6 +11,7 @@ import { CopilotClient, CopilotRequestHandler, RuntimeConnection } from '@github
 import { CancellationTokenSource } from '../../../../../base/common/cancellation.js';
 import { join } from '../../../../../base/common/path.js';
 import { URI } from '../../../../../base/common/uri.js';
+import { generateUuid } from '../../../../../base/common/uuid.js';
 import { upcastPartial } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { ICopilotHomeService } from '../../../../environment/common/copilotHome.js';
@@ -20,12 +21,15 @@ import { ILogService, NullLogService } from '../../../../log/common/log.js';
 import { copilotEntraDiscoveryResource, copilotEntraM365Audience } from '../../../common/copilotEntraAuthentication.js';
 import { authenticationAccountMeta } from '../../../common/meta/agentAuthenticationAccount.js';
 import { copilotAccountOperationMeta } from '../../../common/meta/copilotAccountOperation.js';
+import { ActiveClientToolSet } from '../../../node/activeClientState.js';
 import { IAgentConfigurationService } from '../../../node/agentConfigurationService.js';
 import { AgentHostClientConnectionService, IAgentHostClientConnectionService } from '../../../node/agentHostClientConnectionService.js';
 import { CopilotAccountService } from '../../../node/copilot/copilotAccountService.js';
 import { createCopilotCliEnvironment } from '../../../node/copilot/copilotCliEnvironment.js';
 import { toCopilotAccountModelCatalog } from '../../../node/copilot/copilotAccountModelCatalog.js';
+import { CopilotGitHubSessionCredentials } from '../../../node/copilot/copilotGitHubCredentials.js';
 import { resolveCopilotManagedSettings } from '../../../node/copilot/copilotManagedSettings.js';
+import { createTestLauncher, testRuntime } from '../copilotSessionLauncherTestHelpers.js';
 import { createIsolatedProviderEnvironment } from '../providerTestEnvironment.js';
 
 class LocalAccountRequests extends CopilotRequestHandler {
@@ -45,7 +49,7 @@ class LocalAccountRequests extends CopilotRequestHandler {
 suite('Copilot account context native SDK', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
 
-	test('uses the confirmed setup account for the catalog and policy without global login', async function () {
+	test('uses the confirmed setup account for the catalog, policy and a new conversation without global login', async function () {
 		this.timeout(60_000);
 		const { createServer } = await import('http');
 		const home = await mkdtemp(join(tmpdir(), 'copilot-account-context-'));
@@ -138,6 +142,31 @@ suite('Copilot account context native SDK', () => {
 				service: 'm365', setupModels: [modelId],
 				policyUnresolved: false, globalAuthentication: false, sourceUnchanged: true, catalogFetched: true, authenticatedRequests: true,
 			});
+			const launcher = createTestLauncher(undefined, { m365Enabled: true }, undefined, undefined, undefined, undefined, undefined, accounts);
+			const wrapper = store.add(await launcher.launch({
+				kind: 'create', client, sessionId: generateUuid(), model: { id: modelId },
+				workingDirectory: URI.file(home), resolvedAgentName: undefined, isEphemeral: true,
+				snapshot: { discoveredAgents: [], additionalRootInstructions: [], tools: [], plugins: [], mcpServers: {} },
+				activeClientToolSet: new ActiveClientToolSet(), shellManager: undefined,
+				githubCredentials: CopilotGitHubSessionCredentials.fromClientAuthentication(undefined),
+			}, testRuntime));
+			await accounts.verifySessionContext(wrapper.session, context);
+			const chatCatalog = toCopilotAccountModelCatalog(await wrapper.session.rpc.model.list());
+			const chatPolicy = await resolveCopilotManagedSettings(wrapper.session.rpc.managedSettings, undefined, 5000);
+			const currentModel = await wrapper.session.rpc.model.getCurrent();
+			const builtinTools = await wrapper.session.rpc.tools.getBuiltinDescriptors({});
+			assert.deepStrictEqual({
+				chatModels: chatCatalog.models.map(model => model.id),
+				selectedModel: currentModel.modelId,
+				readToolAvailable: builtinTools.tools.some(tool => tool.name === 'view'),
+				policyUnresolved: chatPolicy.resolved.failClosed,
+				globalAuthentication: (await client.getAuthStatus()).isAuthenticated,
+				sourceUnchanged: accounts.requireReady() === context,
+			}, {
+				chatModels: [modelId], selectedModel: modelId, readToolAvailable: true,
+				policyUnresolved: false, globalAuthentication: false, sourceUnchanged: true,
+			});
+			await wrapper.session.disconnect();
 			await accounts.reset();
 			await assert.rejects(accounts.getSession(context), /no longer available/);
 		} finally {
