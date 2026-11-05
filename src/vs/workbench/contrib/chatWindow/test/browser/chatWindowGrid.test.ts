@@ -15,13 +15,13 @@ import { toDisposable } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { MockContextKeyService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
-import { IPartGridPartFactory, PartGridLocation } from '../../../../browser/parts/partGrid/partGrid.js';
+import { IPartGridPartFactory, PART_GRID_TOP_EDGE_CLASS, PartGridLocation } from '../../../../browser/parts/partGrid/partGrid.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { IContentPart, IEditorGroup, IEditorGroupsService, IEditorPart } from '../../../../services/editor/common/editorGroupsService.js';
 import { ChatWindowGrid, ChatWindowGridCell, IChatWindowGridChrome } from '../../browser/chatWindowGrid.js';
 import { GroupModelChangeKind } from '../../../../common/editor.js';
 import { IGroupModelChangeEvent } from '../../../../common/editor/editorGroupModel.js';
-import { ChatWindowLayoutMode, ChatWindowTerminalPosition } from '../../common/chatWindowLayout.js';
+import { ChatWindowLayoutMode, ChatWindowTerminalPosition, isChatWindowTitleMerged } from '../../common/chatWindowLayout.js';
 import { ChatWindowPartSizes } from '../../common/chatWindowState.js';
 
 suite('Chat window grid', () => {
@@ -1409,5 +1409,122 @@ suite('Chat window grid', () => {
 		mode.set(ChatWindowLayoutMode.Stacked, undefined);
 
 		assert.deepStrictEqual(grid.partGrid!.describe(), 'column(titleRow, row(column(main, chat), strip))');
+	});
+	/** What the group at the top left of the chat part shows: the chat alone, the chat with other editors as tabs, or another chat than the active one. */
+	const CHAT_GROUPS = {
+		alone: { editors: 1, showsActiveChat: true },
+		tabs: { editors: 2, showsActiveChat: true },
+		otherChatActive: { editors: 1, showsActiveChat: false },
+	};
+
+	/** A grid whose title row shows while it does not merge into the chat's title, as a chat window's does. */
+	function setupTitled(initialMode: ChatWindowLayoutMode, chatGroup: { readonly editors: number; readonly showsActiveChat: boolean }, withTerminals: boolean) {
+		const mode = observableValue<ChatWindowLayoutMode>('mode', initialMode);
+		const gridRef = observableValue<ChatWindowGrid | undefined>('grid', undefined);
+		const merged = (chatPartLeads: boolean) => isChatWindowTitleMerged({ mode: mode.get(), chatPartLeads, leadingGroupEditors: chatGroup.editors, leadingGroupShowsActiveChat: chatGroup.showsActiveChat });
+		const titleRow: IChatWindowGridChrome = { ...createChrome(30), visible: derived(reader => { mode.read(reader); return !merged(gridRef.read(reader)?.chatLeads.read(reader) ?? false); }) };
+		const terminals = observableValue<IContentPart | undefined>('terminals', undefined);
+		const terminalsPart = createPartWithEditors('terminals');
+		const container = createAttachedContainer();
+		const grid = disposables.add(new ChatWindowGrid(container, { main: createPart('main'), chat: createPart('chat'), titleRow, strip: createChrome(34), terminals, isTitleMergedIf: merged }, mode, constObservable(0), undefined, constObservable(ChatWindowTerminalPosition.FullWidth), undefined, editorGroupsService));
+		gridRef.set(grid, undefined);
+		grid.layout(1000, 800);
+		if (withTerminals) {
+			terminals.set(terminalsPart.part, undefined);
+			terminalsPart.setEmpty(false);
+		}
+		return { grid, container, mode };
+	}
+
+	/**
+	 * Where the window shows the header of its active chat, and whether it should, by where the chat part is: it merges
+	 * into the chat's title where the chat part is at the top left of the window, the group there showing only the active
+	 * chat, in any mode but Editor Only; otherwise the title row spans the top of the window. Either way, exactly one place
+	 * shows it, and no part is at the top edge, under the window's controls, while the title row shows.
+	 */
+	function observeTitle(grid: ChatWindowGrid, container: HTMLElement, mode: ChatWindowLayoutMode, chatGroup: { readonly editors: number; readonly showsActiveChat: boolean }) {
+		const partGrid = grid.partGrid!;
+		const parts = ['chat', 'main', 'terminals', 'other'].filter(id => partGrid.isCellVisible(id));
+		const elementOf = (id: string) => container.querySelector<HTMLElement>(`[data-part-grid-cell="${id}"]`)!;
+		const boxes = parts.map(id => ({ id, x: Math.round(elementOf(id).getBoundingClientRect().left), y: Math.round(elementOf(id).getBoundingClientRect().top) }));
+		const chatAtTopLeft = boxes.some(box => box.id === 'chat' && box.x === Math.min(...boxes.map(other => other.x)) && box.y === Math.min(...boxes.map(other => other.y)));
+		const titleRowShows = partGrid.isCellVisible(ChatWindowGridCell.TitleRow);
+		const width = titleRowShows ? partGrid.getCellSize(ChatWindowGridCell.TitleRow).width : 0;
+		const merged = !titleRowShows;
+		const topEdge = parts.filter(id => elementOf(id).classList.contains(PART_GRID_TOP_EDGE_CLASS));
+		const shouldMerge = mode !== ChatWindowLayoutMode.EditorOnly && chatAtTopLeft && chatGroup.editors === 1 && chatGroup.showsActiveChat;
+		return {
+			actual: {
+				shape: partGrid.describe().startsWith('column(titleRow, ') ? 'title row first, across the top' : partGrid.describe(),
+				titleRow: titleRowShows ? (width === 1000 ? 'full width' : `${width} wide`) : 'hidden',
+				merged,
+				headerPlaces: (titleRowShows ? 1 : 0) + (merged && topEdge.includes('chat') ? 1 : 0),
+				topEdge: merged ? (topEdge.includes('chat') ? 'chat' : topEdge.join() || 'none') : (topEdge.join() || 'none'),
+			},
+			expected: {
+				shape: 'title row first, across the top',
+				titleRow: shouldMerge ? 'hidden' : 'full width',
+				merged: shouldMerge,
+				headerPlaces: 1,
+				topEdge: shouldMerge ? 'chat' : 'none',
+			},
+		};
+	}
+
+	const MODES = [ChatWindowLayoutMode.SideBySide, ChatWindowLayoutMode.ChatOnly, ChatWindowLayoutMode.Stacked, ChatWindowLayoutMode.EditorOnly];
+	const DIRECTIONS: [string, Direction][] = [['left', Direction.Left], ['right', Direction.Right], ['top', Direction.Up], ['bottom', Direction.Down]];
+
+	test('the chat part and the main part moved to every edge of the window and beside each other, in every mode, with the chat alone, with tabs, or another chat active: the title row spans the top of the window, and merges into the chat\'s title exactly where the chat part leads with only the active chat', () => {
+		const moves: [string, ChatWindowGridCell | undefined, PartGridLocation | undefined][] = [['as arranged', undefined, undefined]];
+		for (const [cell, other] of [[ChatWindowGridCell.Chat, ChatWindowGridCell.Main], [ChatWindowGridCell.Main, ChatWindowGridCell.Chat]] as const) {
+			for (const [name, direction] of DIRECTIONS) {
+				moves.push([`${cell} to the ${name} edge`, cell, { edge: direction }]);
+				moves.push([`${cell} to the ${name} of ${other}`, cell, { reference: other, direction }]);
+			}
+		}
+		for (const mode of MODES) {
+			for (const [groupName, chatGroup] of Object.entries(CHAT_GROUPS)) {
+				for (const [moveName, cell, location] of moves) {
+					const { grid, container } = setupTitled(mode, chatGroup, false);
+					if (cell && location) {
+						grid.partGrid!.moveCell(cell, location);
+					}
+					const { actual, expected } = observeTitle(grid, container, mode, chatGroup);
+					assert.deepStrictEqual(actual, expected, `${mode}, chat ${groupName}, ${moveName}`);
+				}
+			}
+		}
+	});
+
+	test('the terminals and a part for dropped editors moved to the top of the window, above the chat or the main part, or to its left, in every mode: the title row stays across the top of the window, above them, and shows, as the chat part no longer leads', () => {
+		const moves: [string, (grid: ChatWindowGrid) => void][] = [
+			['terminals to the top edge', grid => grid.partGrid!.moveCell(ChatWindowGridCell.Terminals, { edge: Direction.Up })],
+			['terminals above the chat', grid => grid.partGrid!.moveCell(ChatWindowGridCell.Terminals, { reference: ChatWindowGridCell.Chat, direction: Direction.Up })],
+			['terminals above the main part', grid => grid.partGrid!.moveCell(ChatWindowGridCell.Terminals, { reference: ChatWindowGridCell.Main, direction: Direction.Up })],
+			['terminals to the left edge', grid => grid.partGrid!.moveCell(ChatWindowGridCell.Terminals, { edge: Direction.Left })],
+			['a part at the top edge', grid => grid.partGrid!.addPart('other', createPart('other'), { edge: Direction.Up })],
+			['a part at the left edge', grid => grid.partGrid!.addPart('other', createPart('other'), { edge: Direction.Left })],
+			['a part above the chat', grid => grid.partGrid!.addPart('other', createPart('other'), { reference: ChatWindowGridCell.Chat, direction: Direction.Up })],
+		];
+		for (const mode of MODES) {
+			for (const [moveName, move] of moves) {
+				const { grid, container } = setupTitled(mode, CHAT_GROUPS.alone, true);
+				move(grid);
+				const { actual, expected } = observeTitle(grid, container, mode, CHAT_GROUPS.alone);
+				assert.deepStrictEqual(actual, expected, `${mode}, ${moveName}`);
+			}
+		}
+	});
+
+	test('the title row stays across the top of the window as the layout mode changes after a part moved, and as the window arranges the parts again for the mode', () => {
+		for (const from of MODES) {
+			for (const to of MODES) {
+				const { grid, container, mode } = setupTitled(from, CHAT_GROUPS.alone, false);
+				grid.partGrid!.moveCell(ChatWindowGridCell.Chat, { edge: Direction.Right });
+				mode.set(to, undefined);
+				const { actual, expected } = observeTitle(grid, container, to, CHAT_GROUPS.alone);
+				assert.deepStrictEqual(actual, expected, `${from} with the chat moved right, then ${to}`);
+			}
+		}
 	});
 });

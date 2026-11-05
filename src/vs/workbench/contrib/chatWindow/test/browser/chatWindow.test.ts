@@ -428,17 +428,17 @@ suite('Chat window', () => {
 		return { input, onDidEndSecond, disposed };
 	}
 
-	test('with several chats, closing the window, such as to move them to the main window, does not ask whether its chat leads of the chat part its grid is tearing down', () => {
+	test('with several chats, closing the window, such as to move them to the main window, does not ask whether its title merges of the chat part its grid is tearing down', () => {
 		const { window, chat, events } = createWindow({ chatPartTearsDown: true });
 		addSecondChat(window, chat.group);
-		const leads: boolean[] = [];
-		disposables.add(autorun(reader => { leads.push(window.chatLeads.read(reader)); }));
+		const merged: boolean[] = [];
+		disposables.add(autorun(reader => { merged.push(window.titleMerged.read(reader)); }));
 
 		const closed = window.close();
 
-		assert.deepStrictEqual({ closed, leadsAfterClose: leads.at(-1), events }, {
+		assert.deepStrictEqual({ closed, mergedAfterClose: merged.at(-1), events }, {
 			closed: true,
-			leadsAfterClose: false,
+			mergedAfterClose: false,
 			events: ['close main', 'close chat', 'will close', 'close window', 'closed'],
 		});
 	});
@@ -830,6 +830,17 @@ suite('Chat window', () => {
 		});
 	});
 
+	test('the title merges again when a close is vetoed after editors moved out of the chat part and back', () => {
+		const { window, chat } = createWindow({ vetoMain: true });
+		chat.addGroup().open(editor());
+		const merged: boolean[] = [];
+		disposables.add(autorun(reader => { merged.push(window.titleMerged.read(reader)); }));
+
+		const closed = window.close();
+
+		assert.deepStrictEqual({ closed, merged: merged.at(-1), now: window.titleMerged.get() }, { closed: false, merged: true, now: true });
+	});
+
 	test('an editor beside the chat in the chat part moves into the main part before the parts close, so that the chat part closes without asking', () => {
 		const { window, chat, events } = createWindow();
 		const file = editor();
@@ -1130,14 +1141,14 @@ suite('Chat window', () => {
 	test('with another editor beside the chat in its group, as a tab, the chat does not lead the window, so that the title row of the window shows the session and the group\'s tab row is below it; alone again, it leads', async () => {
 		const { window, chat, chatInput } = createWindow();
 		const tab = editor();
-		const leads = [window.chatLeads.get()];
+		const leads = [window.titleMerged.get()];
 		chat.group.open(tab);
-		leads.push(window.chatLeads.get());
+		leads.push(window.titleMerged.get());
 		// Its group shows its tab row while editors are beside it, below the title row of the window
 		await chat.group.openEditor(chatInput);
-		leads.push(window.chatLeads.get());
+		leads.push(window.titleMerged.get());
 		chat.group.fireCloseEditor(tab);
-		leads.push(window.chatLeads.get());
+		leads.push(window.titleMerged.get());
 
 		assert.deepStrictEqual(leads, [true, false, false, true]);
 	});
@@ -1223,11 +1234,11 @@ suite('Chat window', () => {
 
 	test('the chat leads the window from the first group of its part, not after a group split off before it', () => {
 		const { window, chat } = createWindow();
-		const leads = [window.chatLeads.get()];
+		const leads = [window.titleMerged.get()];
 		chat.addGroup();
-		leads.push(window.chatLeads.get());
+		leads.push(window.titleMerged.get());
 		chat.addGroup({ first: true });
-		leads.push(window.chatLeads.get());
+		leads.push(window.titleMerged.get());
 
 		assert.deepStrictEqual(leads, [true, true, false]);
 	});
@@ -1243,12 +1254,12 @@ suite('Chat window', () => {
 	test('the chat\'s editor moved into another part of the window stays in the window, no longer leading it: closing it there closes the window, and the main part closing its last editor keeps the layout', async () => {
 		const { window, state, main, chat, other, chatInput, events } = createWindow({ otherPart: true });
 		state.setLayoutMode(ChatWindowLayoutMode.SideBySide);
-		const leadsBefore = window.chatLeads.get();
+		const leadsBefore = window.titleMerged.get();
 
 		other.group.testEditors.push(chatInput);
 		chat.group.fireCloseEditor(chatInput, EditorCloseContext.MOVE);
 		const afterMove = [...events];
-		const leadsAfterMove = window.chatLeads.get();
+		const leadsAfterMove = window.titleMerged.get();
 
 		const file = editor();
 		main.group.open(file);

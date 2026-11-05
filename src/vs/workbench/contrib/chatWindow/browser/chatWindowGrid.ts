@@ -56,6 +56,11 @@ export interface IChatWindowGridCells {
 	readonly terminals?: IObservable<IContentPart | undefined>;
 	/** Whether the chat shows only its input: it does not move then, so that the sash on its edge takes the pointer there. */
 	readonly chatInputOnly?: IObservable<boolean>;
+	/**
+	 * Whether the title row merges into the title of the chat while the chat part leads the window, or does not, as where a
+	 * part being moved would put it: the title row hides then. Without it, it merges while the chat part leads.
+	 */
+	readonly isTitleMergedIf?: (chatPartLeads: boolean) => boolean;
 }
 
 type TopologyNode = { readonly cell: ChatWindowGridCell } | { readonly orientation: Orientation; readonly children: readonly TopologyNode[] };
@@ -605,12 +610,18 @@ export class ChatWindowGrid extends Disposable {
 		// The chat showing only its input does not move: its edge is the sash's, which shows its conversation
 		this._movableRegistration.value = partGrid.setMovable(id => id !== ChatWindowGridCell.Chat || !this._cells.chatInputOnly?.get());
 		partGrid.setPreviewLayoutAllowed((id, part) => id !== ChatWindowGridCell.Terminals && !part.groups.some(group => group.activeEditor?.typeId === TERMINAL_EDITOR_TYPE_ID));
-		// The title row of the window shows while the chat does not lead it, as the chat's own title stands in for it while
-		// it does: a part that moves shows where it goes with the title row as it will be
+		// The title row spans the top of the window, whatever moves, as the first row of the grid: the window's controls
+		// are in it, and no part's title is under them.
+		if (this._titleRow) {
+			partGrid.setPinnedTopView(ChatWindowGridCell.TitleRow);
+		}
+		// The title row of the window shows while it does not merge into the chat's title, as the chat's own title stands in
+		// for it while it does: a part that moves shows where it goes with the title row as it will be
+		const merged = (chatPartLeads: boolean) => this._cells.isTitleMergedIf?.(chatPartLeads) ?? chatPartLeads;
 		this._previewAdjusterRegistration.value = this._titleRow && partGrid.setMovePreviewAdjuster(preview => {
-			const titleRowFollowsLead = preview.isCellVisible(ChatWindowGridCell.TitleRow) === !this._chatLeads.get();
-			if (titleRowFollowsLead) {
-				preview.setCellVisible(ChatWindowGridCell.TitleRow, !preview.leads(ChatWindowGridCell.Chat));
+			const titleRowFollowsMerge = preview.isCellVisible(ChatWindowGridCell.TitleRow) === !merged(this._chatLeads.get());
+			if (titleRowFollowsMerge) {
+				preview.setCellVisible(ChatWindowGridCell.TitleRow, !merged(preview.leads(ChatWindowGridCell.Chat)));
 			}
 		});
 		this._terminalsFirstShowHeight = undefined;

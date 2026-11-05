@@ -186,7 +186,7 @@ suite('Sessions chat window provider', () => {
 			override readonly onDidMoveGroup = Event.None;
 		}();
 		override readonly layoutMode = constObservable(ChatWindowLayoutMode.SideBySide);
-		override readonly chatLeads = constObservable(true);
+		override readonly titleMerged = constObservable(true);
 		override readonly onDidClose = Event.None;
 		override readonly chat = activeChat;
 		override readonly chats = derived(reader => [activeChat.read(reader)]);
