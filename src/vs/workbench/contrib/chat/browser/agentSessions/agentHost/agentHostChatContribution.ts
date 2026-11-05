@@ -17,7 +17,7 @@ import { affectsAgentHostProviderPreference, getPolicyUnavailableLocalAgentHostP
 import { IAgentHostEnablementService } from '../../../../../../platform/agentHost/common/agentHostEnablementService.js';
 import { AGENT_HOST_SCHEME, agentHostAuthority, createAgentHostResourceUriMapper, LOCAL_AGENT_HOST_AUTHORITY } from '../../../../../../platform/agentHost/common/agentHostUri.js';
 import { type ProtectedResourceMetadata } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
-import { NotificationType } from '../../../../../../platform/agentHost/common/state/sessionActions.js';
+import { NotificationType, type AuthRequiredReason } from '../../../../../../platform/agentHost/common/state/sessionActions.js';
 import { type AgentInfo, type RootState } from '../../../../../../platform/agentHost/common/state/sessionState.js';
 import { CHATGPT_SUBSCRIPTION_MODEL_SOURCE_ID } from '../../../../../../platform/agentHost/common/agentModelSource.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
@@ -236,7 +236,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 			if (notification.type !== NotificationType.AuthRequired) {
 				return;
 			}
-			this._authenticateNotificationResource(notification.resource);
+			this._authenticateNotificationResource(notification.resource, notification.reason);
 		}));
 		store.add(this._defaultAccountService.onDidChangeDefaultAccount(() => {
 			this._authenticateWithServer(this._getRootAgents()).catch(() => { /* best-effort */ });
@@ -528,7 +528,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		}
 	}
 
-	private _authenticateNotificationResource(protectedResource: ProtectedResourceMetadata): void {
+	private _authenticateNotificationResource(protectedResource: ProtectedResourceMetadata, reason?: AuthRequiredReason): void {
 		const generation = this._authenticationGeneration;
 		if (!this._isAuthenticationCurrent(generation)) {
 			return;
@@ -537,6 +537,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		this._instantiationService.invokeFunction(accessor => this._authRecovery.recover(accessor, protectedResource, {
 			authTokenCache: this._authTokenCache,
 			microsoftAccountId: this._copilotAccountContext()?.entraAccountId,
+			challengeReason: reason,
 			logPrefix: '[AgentHost]',
 			isCurrent: () => this._isAuthenticationCurrent(generation),
 			authenticate: request => this._authenticateIfCurrent(request, generation),

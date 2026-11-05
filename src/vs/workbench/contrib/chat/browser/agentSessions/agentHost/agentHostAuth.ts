@@ -24,6 +24,7 @@ import { gitHubCopilotResource } from '../../../../../../platform/agentHost/comm
 import { copilotEntraAuthorizationServer, copilotEntraClientId, copilotEntraDiscoveryResource, copilotEntraResources, isCopilotEntraResource } from '../../../../../../platform/agentHost/common/copilotEntraAuthentication.js';
 import { type McpAuthRequirement, type McpOAuthClient, type ModelSelection, type ProtectedResourceMetadata } from '../../../../../../platform/agentHost/common/state/protocol/state.js';
 import type { AuthenticateTarget, McpServerAuthenticateTarget } from '../../../../../../platform/agentHost/common/state/sessionProtocol.js';
+import { AuthRequiredReason } from '../../../../../../platform/agentHost/common/state/sessionActions.js';
 import type { IAgentConnection } from '../../../../../../platform/agentHost/common/agentService.js';
 import { ICommandService } from '../../../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../../../platform/configuration/common/configuration.js';
@@ -390,7 +391,7 @@ export class AgentHostAuthenticationRecovery {
 		const rejectedSession = options.authTokenCache?.getRejectedSession(resource.resource, scopes);
 		const isQuarantined = rejectedSession !== undefined && isSameAuthenticationSession(currentSession, rejectedSession);
 		let candidateResolution: AuthenticationSessionResolution = resolution;
-		if (isQuarantined || previousToken === currentSession.accessToken) {
+		if (isQuarantined || previousToken === currentSession.accessToken && !isRequiredCopilotEntraAcquisition(resource, options)) {
 			candidateResolution = await resolveSessionForProtectedResource(
 				authenticationService,
 				defaultAccountService,
@@ -609,6 +610,7 @@ export interface IAgentHostAuthenticationOptions {
 	readonly preferredSessionId?: string;
 	/** Exact Microsoft identity from the host's current shared account context. */
 	readonly microsoftAccountId?: string;
+	readonly challengeReason?: AuthRequiredReason;
 	readonly copilotAccountChoice?: boolean;
 	readonly isCurrent?: () => boolean;
 	/** Returns true after renewing a connection-owned credential, or false to use normal provider recovery. */
@@ -959,7 +961,15 @@ function canRevokeCopilotEntraAuthentication(resource: ProtectedResourceMetadata
 	return !isCopilotEntraResource(resource) || options.authTokenCache?.getSessionId(resource.resource, resource.scopes_supported) !== undefined;
 }
 
+function isRequiredCopilotEntraAcquisition(resource: ProtectedResourceMetadata, options: IAgentHostAuthenticationOptions): boolean {
+	return !!options.microsoftAccountId && options.challengeReason === AuthRequiredReason.Required && isCopilotEntraResource(resource);
+}
+
 async function revokeChangedCopilotEntraAccount(authenticationService: IAuthenticationService, defaultAccountService: IDefaultAccountService, resource: ProtectedResourceMetadata, options: IAgentHostAuthenticationOptions): Promise<boolean> {
+	// The shared account choice is independent of this window's default account.
+	if (options.microsoftAccountId) {
+		return false;
+	}
 	const forwardedAccount = options.authTokenCache?.getAccountId(resource.resource, resource.scopes_supported);
 	if (!isCopilotEntraResource(resource) || forwardedAccount === undefined) {
 		return false;
